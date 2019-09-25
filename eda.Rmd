@@ -1,0 +1,283 @@
+---
+title: 'Dissertations EDA'
+author: 'Rui Almeida'
+output:
+  github_document: default
+  pdf_document:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include = FALSE}
+library(tidyverse)
+library(lubridate)
+library(modelr)
+library(reshape2)
+library(wordcloud)
+
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  fig.align = 'center',
+  out.width = '700px'
+)
+```
+
+This is a study of the master dissertations completed between 2013-2018 at ISEP. My goal is to consolidate some knowledge about R for exploratory data analysis that I obtained from reading the book [R for Data Science](https://r4ds.had.co.nz). I also have to think about my dissertation topic this year and was curious about previous works from my university, so I will analyze a free dataset to answer some questions.
+
+Let's start by loading the data:
+
+```{r load data, results = 'hide'}
+data <- read_csv('./data/data.csv')
+```
+
+## Data Exploration
+
+```{r check data}
+glimpse(data)
+```
+
+The table contains 292 rows and 13 columns. There is categorical data such as the Nationality and Specialization, discrete numerical data like the Grade and Pages and as continuous numerical data we have the WordsPerPage and Size.
+
+### What are the most common nationalities?
+
+```{r nationality}
+data %>%
+  count(Nationality) %>%
+  filter(n > 1) %>%
+  arrange(desc(n))
+```
+Out of 292 dissertations, 276 are from portuguese students. Not many students from other countries here.
+
+### Is there a significant difference between grades in specializations?
+
+There have been a few changes to the specializations over the years. Here's the full list:
+
+```{r unique specializations}
+unique(data$Specialization)
+```
+
+We can see how many students have delivered dissertations for each specialization.
+
+```{r specializations overview}
+data %>%
+  group_by('Year' = year(Date), Specialization) %>%
+  summarise(
+    mean = mean(Grade),
+    count = n()
+  ) %>%
+  ggplot(aes(Year, count, color=Specialization)) +
+    geom_line(show.legend = FALSE) +
+    geom_text(aes(label=count), show.legend = FALSE) +
+    facet_wrap(~Specialization, nrow=3)
+```
+
+Weird that in 2016 and 2017 no dissertations were delivered in Software Engineering. I know that some specializations were renamed, so we'll apply a transformation.
+
+```{r specializations rename}
+data <- data %>%
+  mutate(
+    Specialization = recode(
+      Specialization,
+      'Arquitecturas, Sistemas e Redes' = 'Sistemas Computacionais',
+      'Tecnologias do Conhecimento e Decisão' = 'Sistemas de Informação e Conhecimento'
+    )
+  )
+```
+
+Now let's compare their distributions using boxplots.
+
+```{r specializations boxplots}
+data %>%
+  ggplot(aes(fct_rev(Specialization), Grade)) +
+  geom_boxplot() +
+  coord_flip() +
+  scale_y_continuous(limits=c(10,20), breaks = seq(10, 20, 2))
+
+# p-value > 0.05, cannot reject h0 (variance is the same)
+anova(lm(Grade ~ Specialization, data = data))
+```
+
+All specializations are very similar in terms of grading.
+
+### How many men and women have graduated over the years?
+
+```{r sex comparison bar chart}
+ggplot(data, aes(x = as.factor(year(Date)), fill = Sex)) +
+  geom_bar(position = 'dodge') +
+  geom_text(stat = 'count', aes(label=..count.., vjust = -0.2), position = position_dodge(width = 1))
+```
+
+There are 262 male students and 30 female students that finished their disserations between 2013 and 2018.
+
+I'm curious about their distribution over the years and specializations.
+
+```{r facet grid}
+data %>%
+  group_by('Year' = year(Date), Specialization) %>%
+  count(Sex) %>%
+  mutate(freq = round(n / sum(n), 2) * 100) %>%
+  ggplot(aes(Sex, n, fill = Sex)) +
+    geom_bar(stat = 'identity') +
+    geom_text(stat = 'identity', aes(label = paste0(n, ' (', freq, '%)'), vjust = -0.2)) +
+    ylim(0, 50) +
+    facet_grid(Year ~ Specialization) +
+    theme(legend.position = 'none')
+```
+
+### Do advisors accept students from multiple specializations?
+
+```{r advisors specialization}
+topAdvisors <- (data %>% count(Advisors) %>% filter(n > 9))$Advisors
+data %>%
+  filter(Advisors %in% topAdvisors) %>%
+  ggplot(aes(reorder(abbreviate(Advisors), Grade, FUN = mean), as.factor(Grade))) +
+  geom_point(alpha = 1/2, position = position_jitter(w = 0, h = 0.2), aes(color=Specialization)) +
+  coord_flip()
+```
+
+The advisors with most students don't limit themselves to a single specialization.
+
+### How many pages do dissertations have on average?
+
+```{r pages histogram and frequency polygon}
+data %>%
+  ggplot(aes(Pages)) +
+  geom_histogram(binwidth = 25) +
+  geom_freqpoly(aes(color=Specialization), binwidth = 25) + 
+  geom_vline(xintercept=mean(data$Pages, na.rm = TRUE), col='gray')
+```
+
+```{r pages summary, echo=FALSE}
+summary(data$Pages)
+```
+
+On average the dissertations analyzed have 123 pages.
+
+### Is there a correlation between the size and the number of words per page?
+
+```{r size and words per page binmap}
+data %>%
+  ggplot(aes(Size, WordsPerPage)) +
+  geom_bin2d() + # to prevent overplotting: binning, transparency, jitter
+  geom_smooth(color = 'purple', se = F)
+```
+
+The graph shows no correlation between the 2 variables, so dissertations with more pages do not usually have more words per page.
+
+### What is the mean number of pages by year and specialization?
+
+```{r number of pages heatmap}
+data %>%
+  group_by('Year' = year(Date), Specialization) %>%
+  summarise(m = round(mean(Pages, na.rm = TRUE), 0)) %>%
+  ggplot(aes(as.factor(Year), Specialization)) +
+    geom_tile(mapping = aes(fill = m)) +
+    geom_text(aes(label = m), color='white') +
+    labs(x = 'Year', fill = 'Mean')
+```
+
+### How is the distribution of the number of words by each grade?
+
+```{r grade and words boxplot with categorical scatterplot}
+data %>%
+  ggplot(aes(as.factor(Grade), Words)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(alpha = 1/3, position = position_jitter(w = 0.1, h = 0))
+```
+
+### What are common keywords?
+
+```{r keywords wordcloud}
+wordcloud(data$Keywords, min.freq = 5, random.order = F)
+```
+
+## Modelling
+
+Just as an example, I will try to predict something. We need to start by dealing with missing values. I have opted to remove these rows, along with some outliers.
+
+```{r filter rows}
+data2 <- data %>% filter(!is.na(Words) & Words < 40000)
+```
+
+A correlation matrix is helpful to see how variables are related to each other.
+
+```{r correlation matrix}
+data2 %>% 
+  select(Grade, Pages, Words, WordsPerPage, Size) %>%
+  cor() %>%
+  round(2) %>%
+  melt() %>%
+  ggplot(mapping = aes(Var1, Var2, fill = value)) +
+  geom_tile() +
+  geom_text(aes(label = value), color = 'white')
+```
+
+As expected there is a strong correlation between the number of pages and the number of words. The calculated metric WordsPerPage also has a strong correlation with the number of words.
+
+### Linear Regression
+
+```{r linear models}
+mod1 <- lm(Words ~ WordsPerPage + Pages, data = data2) # with + the variables are independent
+mod2 <- lm(Words ~ WordsPerPage * Pages, data = data2) # * denotes interactions between vars
+mod3 <- lm(Words ~ WordsPerPage, data = data2)
+
+data2 %>%
+  gather_predictions(mod1, mod2, mod3) %>%
+  ggplot(aes(WordsPerPage, Words, color=Pages)) +
+    geom_point(alpha = 0.5) +
+    geom_line(aes(y = pred), colour = 'red', size = 1) +
+    facet_wrap(~model)
+```
+
+The first two models are clearly overfitting. I will pick the third model and verify the linear regression model assumptions.
+
+Residuals should be normally distributed with a mean of zero:
+
+```{r residuals normally distributed}
+ggplot(NULL, aes(sample = residuals(mod3))) +
+  stat_qq(shape=21, stroke=1.5) +
+  stat_qq_line()
+
+# p-value > 0.05, cannot reject h0 (normal distribution)
+shapiro.test(residuals(mod3))
+
+# p-value > 0.05, cannot reject h0 (mean = 0)
+t.test(residuals(mod3))
+```
+
+Residuals should be independent:
+
+```{r residuals independent}
+library(car)
+# p-value > 0.05, cannot reject h0 (residuals are independent)
+durbinWatsonTest(mod3)
+```
+
+
+Residuals should have equal variance:
+
+```{r residuals equal variance}
+ggplot(NULL, aes(fitted(mod3), residuals(mod3))) + 
+  geom_ref_line(h = 0) +
+  geom_point() +
+  labs(title = 'Fitted vs Residuals')
+
+library(lmtest)
+# p-value > 0.05, cannot reject h0 (variances are equal)
+bptest(mod3)
+```
+
+```{r model summary}
+library(gvlma)
+gvlma(mod3)
+summary(mod3)
+names(summary(mod3))
+summary(mod3)$adj.r.squared
+```
+
+All the assumptions have been verified. The Ajusted R-squared shows that 52.6% of the Words variability is explained by the WordsPerPage.
+
+## Conclusion
+
+I have recently increased my knowledge about exploratory data analysis and R. It is helpful to know how to present information to other people using appropriate data visualization techniques. I also want to research about the machine learning domain because it is increasingly being used to solve hard problems in the real world.
